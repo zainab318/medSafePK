@@ -63,6 +63,7 @@ function DoctorDashboard({ doctorName }) {
   ];
 
   const sidebarItems = [
+    { name: 'Dashboard', icon: FileText, path: '/doctor-dashboard', color: 'text-primary-600' },
     { name: 'Write Prescription', icon: FileText, path: '/prescription-checker', color: 'text-primary-600' },
     { name: 'Patient Records', icon: Users, path: '/patient-records', color: 'text-blue-600' },
     { name: 'Analytics', icon: BarChart3, path: '/analytics', color: 'text-purple-600' },

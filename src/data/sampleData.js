@@ -13,6 +13,19 @@ export const pakistaniHospitals = [
   "Holy Family Hospital, Rawalpindi"
 ];
 
+export const popularPharmacies = [
+  "Servaid Pharmacy",
+  "Fazal Din's Pharma Plus",
+  "Clinix Pharmacy",
+  "D-Watson",
+  "Shaheen Chemists",
+  "Shifaa Pharmacy",
+  "Medix Pharmacy",
+  "Multan Medicos",
+  "Agha's Super Mart Pharmacy",
+  "Other - Add Manually"
+];
+
 export const patients = [
   {
     id: "P001",
