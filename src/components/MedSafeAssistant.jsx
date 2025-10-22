@@ -7,11 +7,16 @@ function MedSafeAssistant({ isOpen, onClose, patientName, patientData }) {
     {
       id: 1,
       type: 'bot',
-      text: `Hello ${patientName || 'there'}! 👋 I'm your MedSafe Assistant. I can help you understand your medications, dosage instructions, and answer questions about common medicines used in Pakistan. 
+      text: `Hello ${patientName || 'there'}! 👋 I'm your MedSafe Assistant. 
 
-${patientData ? `I have access to your medical profile and will check all medications against your allergies and health conditions for personalized safety advice.` : ''}
+I have information on **48 verified Pakistani medicines** including:
+• Panadol, Brufen, Augmentin
+• Flagyl, Azomax, Losec
+• And 42 more common medicines!
 
-How can I help you today?`,
+${patientData ? `✅ I have access to your medical profile and will check all medications against your allergies and health conditions for personalized safety advice.` : ''}
+
+Ask me about dosage, timing, side effects, or how to take any of these medicines!`,
       timestamp: new Date()
     }
   ]);
@@ -340,72 +345,42 @@ ${drug.withMilk ? `🥛 With milk: ${drug.withMilk}` : ''}
 Always follow your doctor's instructions. Need more specific information?`;
   };
 
-  // Call Gemini API
-  const callGeminiAPI = async (userQuery, foundInLocal = false) => {
-    const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY';
+  // Call Gemini API for medicines not in database
+  const callGeminiAPI = async (userQuery) => {
+    const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
     
-    // System prompt
-    const systemPrompt = `You are MedSafe Assistant, a helpful and caring medication advisor for patients in Pakistan. 
+    if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_api_key_here') {
+      // Fallback if no API key
+      return `I don't have information about that medicine in my verified database of 48 Pakistani medicines.
 
-CRITICAL RULES:
-1. Always prioritize patient safety above all
-2. If local verified drug data is available, use that information
-3. Never recommend specific medications - only provide information about medications already prescribed
-4. Always advise consulting a doctor for medical decisions
-5. Use simple, clear language that patients can understand
-6. Be empathetic and supportive
-7. Focus on verified information from Pakistan's healthcare context
-8. If unsure, always err on the side of caution and recommend consulting a healthcare provider
-9. Never log or store sensitive patient information
-10. Keep responses concise (2-3 paragraphs maximum)
+**I can help with:** Panadol, Brufen, Augmentin, Flagyl, Azomax, Losec, and 42 more!
 
-${foundInLocal ? 'Note: This query was partially answered using our verified local database.' : 'Note: No verified local data found. Provide general, safe information and recommend consulting a doctor.'}`;
+**For other medicines:** Please consult your doctor or pharmacist for accurate information.`;
+    }
+
+    const systemPrompt = `You are MedSafe Assistant, a medication advisor for patients in Pakistan. Provide helpful, safe information about medicines. Always recommend consulting a doctor for medical decisions. Keep responses concise (2-3 paragraphs). Focus on Pakistan healthcare context.`;
 
     try {
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    text: `${systemPrompt}\n\nPatient question: ${userQuery}`
-                  }
-                ]
-              }
-            ],
-            generationConfig: {
-              temperature: 0.7,
-              maxOutputTokens: 500,
-            },
-          }),
+            contents: [{ parts: [{ text: `${systemPrompt}\n\nQuestion: ${userQuery}` }] }],
+            generationConfig: { temperature: 0.7, maxOutputTokens: 500 }
+          })
         }
       );
 
-      if (!response.ok) {
-        throw new Error('Gemini API call failed');
-      }
+      if (!response.ok) throw new Error('API call failed');
 
       const data = await response.json();
-      const generatedText = data.candidates[0]?.content?.parts[0]?.text;
-      
-      return generatedText || "I apologize, but I couldn't process that request. Please try rephrasing your question or consult your doctor.";
+      return data.candidates[0]?.content?.parts[0]?.text || 
+        "I couldn't process that. Please consult your doctor or pharmacist.";
     } catch (error) {
       console.error('Gemini API Error:', error);
-      // Fallback response when API fails
-      return `I'm having trouble connecting to my knowledge base right now. For medication questions, I recommend:
-
-1. **Consult your doctor or pharmacist** - They have your complete medical history
-2. **Check your prescription label** - It has dosage and timing instructions
-3. **Read the medicine leaflet** - It contains detailed information
-4. **Call a pharmacy helpline** - They can provide immediate guidance
-
-Your safety is our priority. Please seek professional medical advice for specific concerns.`;
+      return `I'm having trouble right now. For medication questions, please consult your doctor or pharmacist. They can provide accurate, personalized advice.`;
     }
   };
 
@@ -425,7 +400,7 @@ Your safety is our priority. Please seek professional medical advice for specifi
     setIsLoading(true);
 
     try {
-      // First, check local database
+      // Check local database
       const localDrug = searchLocalDatabase(inputText);
       
       let botResponse;
@@ -442,7 +417,7 @@ Your safety is our priority. Please seek professional medical advice for specifi
         };
       } else {
         // Not in local database - use Gemini API
-        const geminiResponse = await callGeminiAPI(inputText, false);
+        const geminiResponse = await callGeminiAPI(inputText);
         botResponse = {
           id: Date.now() + 1,
           type: 'bot',
