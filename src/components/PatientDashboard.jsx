@@ -10,9 +10,14 @@ import {
   CheckCircle,
   Bell,
   Camera,
-  Sparkles
+  Sparkles,
+  MessageCircle,
+  Save
 } from 'lucide-react';
 import { patients } from '../data/sampleData';
+import MedSafeAssistant from './MedSafeAssistant';
+import { createWorker } from 'tesseract.js';
+import drugsData from '../data/drugs.json';
 
 function PatientDashboard({ patientName, patientId }) {
   const [searchId, setSearchId] = useState(patientId || '');
@@ -20,6 +25,10 @@ function PatientDashboard({ patientName, patientId }) {
   const [uploadedImage, setUploadedImage] = useState(null);
   const [extractedData, setExtractedData] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isChatbotOpen, setIsChatbotOpen] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState(0);
+  const [extractedText, setExtractedText] = useState('');
+  const [savedReminders, setSavedReminders] = useState([]);
 
   const handlePatientSearch = (e) => {
     e.preventDefault();
@@ -39,54 +48,205 @@ function PatientDashboard({ patientName, patientId }) {
       const reader = new FileReader();
       reader.onloadend = () => {
         setUploadedImage(reader.result);
-        // Simulate OCR processing
-        simulateOCR();
+        // Process with real OCR
+        performOCR(reader.result);
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const simulateOCR = () => {
+  // Real OCR using Tesseract.js
+  const performOCR = async (imageData) => {
     setIsProcessing(true);
-    
-    // Simulate OCR/NLP processing delay
-    setTimeout(() => {
-      // Mock extracted prescription data
-      const mockExtractedData = {
-        medications: [
-          {
-            drug: 'Paracetamol',
-            dosage: '500mg',
-            frequency: 'Every 6 hours',
-            duration: '5 days',
-            timing: 'After meals',
-            instructions: 'Take with plenty of water'
-          },
-          {
-            drug: 'Amoxicillin',
-            dosage: '250mg',
-            frequency: 'Three times daily',
-            duration: '7 days',
-            timing: 'Before meals',
-            instructions: 'Complete the full course'
-          },
-          {
-            drug: 'Omeprazole',
-            dosage: '20mg',
-            frequency: 'Once daily',
-            duration: '14 days',
-            timing: 'Morning before breakfast',
-            instructions: 'Take on empty stomach'
+    setOcrProgress(0);
+    setExtractedData(null);
+    setExtractedText('');
+
+    try {
+      const worker = await createWorker('eng', 1, {
+        logger: (m) => {
+          if (m.status === 'recognizing text') {
+            setOcrProgress(Math.round(m.progress * 100));
           }
-        ],
-        doctorName: 'Dr. Ahmad Khan',
-        date: new Date().toLocaleDateString(),
-        confidence: 95
-      };
+        }
+      });
+
+      const { data: { text } } = await worker.recognize(imageData);
+      await worker.terminate();
+
+      setExtractedText(text);
       
-      setExtractedData(mockExtractedData);
+      // Parse the extracted text to find medicines
+      const parsedData = parsePrescriptionText(text);
+      setExtractedData(parsedData);
       setIsProcessing(false);
-    }, 2000);
+      
+    } catch (error) {
+      console.error('OCR Error:', error);
+      alert('Failed to read prescription. Please try again with a clearer image.');
+      setIsProcessing(false);
+    }
+  };
+
+  // Parse OCR text to extract medicine information
+  const parsePrescriptionText = (text) => {
+    const lines = text.split('\n').filter(line => line.trim() !== '');
+    const medications = [];
+    
+    // Common medicine name patterns (brand names from our database)
+    const knownMedicines = drugsData.drugs.map(d => d.name.toLowerCase());
+    const knownGenerics = drugsData.drugs.map(d => d.genericName.toLowerCase());
+    
+    // Dosage patterns: 500mg, 250 mg, 1g, etc.
+    const dosagePattern = /(\d+\.?\d*)\s*(mg|g|ml|mcg|tablet|capsule)/gi;
+    
+    // Frequency patterns
+    const frequencyPatterns = [
+      /once\s+(daily|a day)/i,
+      /twice\s+(daily|a day)/i,
+      /three\s+times/i,
+      /every\s+(\d+)\s+(hour|hr)/i,
+      /(\d+)x\s+(daily|day)/i
+    ];
+
+    let currentMedicine = null;
+
+    lines.forEach((line, index) => {
+      const lineLower = line.toLowerCase();
+      
+      // Check if line contains a known medicine name
+      let foundMedicine = null;
+      for (const med of drugsData.drugs) {
+        if (lineLower.includes(med.name.toLowerCase()) || 
+            lineLower.includes(med.genericName.toLowerCase())) {
+          foundMedicine = med;
+          break;
+        }
+      }
+
+      if (foundMedicine) {
+        // Extract dosage from this line or next few lines
+        let dosage = foundMedicine.dosage;
+        let frequency = foundMedicine.frequency;
+        let instructions = '';
+        
+        // Look for dosage in current and next 2 lines
+        for (let i = 0; i < 3 && (index + i) < lines.length; i++) {
+          const checkLine = lines[index + i];
+          const dosageMatch = checkLine.match(dosagePattern);
+          if (dosageMatch) {
+            dosage = dosageMatch[0];
+          }
+          
+          // Check for frequency
+          for (const pattern of frequencyPatterns) {
+            if (pattern.test(checkLine)) {
+              frequency = checkLine.match(pattern)[0];
+              break;
+            }
+          }
+          
+          // Look for common instruction keywords
+          if (/after (food|meal|eating)/i.test(checkLine)) {
+            instructions = 'Take after meals';
+          } else if (/before (food|meal|eating)/i.test(checkLine)) {
+            instructions = 'Take before meals';
+          } else if (/empty stomach/i.test(checkLine)) {
+            instructions = 'Take on empty stomach';
+          } else if (/with (food|milk)/i.test(checkLine)) {
+            instructions = 'Take with food or milk';
+          }
+        }
+
+        currentMedicine = {
+          drug: foundMedicine.name,
+          genericName: foundMedicine.genericName,
+          dosage: dosage,
+          frequency: frequency,
+          duration: '7 days', // Default
+          timing: foundMedicine.timing || 'As prescribed',
+          instructions: instructions || foundMedicine.usage
+        };
+        
+        medications.push(currentMedicine);
+      }
+    });
+
+    // If no medicines found, try to extract any medicine-like words
+    if (medications.length === 0) {
+      // Look for capitalized words that might be medicine names
+      lines.forEach(line => {
+        const dosageMatch = line.match(dosagePattern);
+        if (dosageMatch) {
+          const words = line.split(/\s+/);
+          const capitalizedWords = words.filter(w => /^[A-Z]/.test(w) && w.length > 3);
+          
+          if (capitalizedWords.length > 0) {
+            medications.push({
+              drug: capitalizedWords[0],
+              genericName: 'Unknown',
+              dosage: dosageMatch[0],
+              frequency: 'As prescribed',
+              duration: '7 days',
+              timing: 'As prescribed',
+              instructions: 'Consult your doctor for proper usage'
+            });
+          }
+        }
+      });
+    }
+
+    // Extract doctor name and date if present
+    let doctorName = 'Unknown Doctor';
+    let date = new Date().toLocaleDateString();
+    
+    lines.forEach(line => {
+      if (/dr\.?\s+[a-z]+/i.test(line)) {
+        const match = line.match(/dr\.?\s+([a-z\s]+)/i);
+        if (match) {
+          doctorName = 'Dr. ' + match[1].trim();
+        }
+      }
+      
+      // Look for date patterns
+      if (/\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}/.test(line)) {
+        const dateMatch = line.match(/\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}/);
+        if (dateMatch) {
+          date = dateMatch[0];
+        }
+      }
+    });
+
+    return {
+      medications: medications.length > 0 ? medications : [{
+        drug: 'No medicines detected',
+        genericName: '',
+        dosage: 'N/A',
+        frequency: 'N/A',
+        duration: 'N/A',
+        timing: 'Please check your image',
+        instructions: 'Make sure: (1) Image contains a prescription with medicine names, (2) Photo is clear and well-lit, (3) Medicine names are visible (e.g., Panadol, Brufen, Augmentin). We support 48 common Pakistani medicines.'
+      }],
+      doctorName,
+      date,
+      confidence: medications.length > 0 ? 85 : 50,
+      ocrSuccess: true,  // OCR worked, just no medicines found
+      extractedTextLength: text.length
+    };
+  };
+
+  // Save extracted medicines as reminders
+  const saveAsReminders = () => {
+    if (!extractedData || !extractedData.medications) return;
+    
+    const reminders = extractedData.medications.map(med => ({
+      ...med,
+      times: generateMedicineTimes(med.frequency),
+      addedAt: new Date().toLocaleString()
+    }));
+    
+    setSavedReminders(prev => [...prev, ...reminders]);
+    alert(`✅ ${reminders.length} medicine(s) saved as reminders!`);
   };
 
   const getMedicineSchedule = () => {
@@ -204,12 +364,24 @@ function PatientDashboard({ patientName, patientId }) {
             <h3 className="text-xl font-semibold text-gray-900 mb-2">
               AI is reading your prescription...
             </h3>
-            <p className="text-gray-600">
-              Using OCR and NLP to extract medication details
+            <p className="text-gray-600 mb-4">
+              Using Tesseract OCR + NLP to extract medication details
             </p>
-            <div className="mt-4 w-64 mx-auto bg-gray-200 rounded-full h-2">
-              <div className="bg-primary-600 h-2 rounded-full animate-pulse" style={{width: '75%'}}></div>
+            <div className="mt-4 w-64 mx-auto">
+              <div className="flex justify-between text-sm text-gray-600 mb-2">
+                <span>Processing...</span>
+                <span className="font-semibold">{ocrProgress}%</span>
+              </div>
+              <div className="bg-gray-200 rounded-full h-3 overflow-hidden">
+                <div 
+                  className="bg-gradient-to-r from-primary-600 to-blue-600 h-3 rounded-full transition-all duration-300"
+                  style={{width: `${ocrProgress}%`}}
+                ></div>
+              </div>
             </div>
+            <p className="text-xs text-gray-500 mt-4">
+              This may take 10-20 seconds depending on image quality
+            </p>
           </div>
         )}
 
@@ -247,6 +419,9 @@ function PatientDashboard({ patientName, patientId }) {
                     <div>
                       <h4 className="text-lg font-bold text-gray-900">{med.drug}</h4>
                       <p className="text-primary-600 font-semibold">{med.dosage}</p>
+                      {med.genericName && med.genericName !== 'Unknown' && (
+                        <p className="text-xs text-gray-500 mt-1">Generic: {med.genericName}</p>
+                      )}
                     </div>
                     <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-medium">
                       {med.duration}
@@ -282,6 +457,58 @@ function PatientDashboard({ patientName, patientId }) {
                 </div>
               ))}
             </div>
+
+            {/* Save as Reminders Button OR Helpful Tips */}
+            {extractedData.medications[0].drug !== 'No medicines detected' ? (
+              <div className="mt-6 pt-6 border-t border-gray-200">
+                <button
+                  onClick={saveAsReminders}
+                  className="w-full bg-gradient-to-r from-green-600 to-green-700 text-white px-6 py-3 rounded-lg hover:from-green-700 hover:to-green-800 transition-all flex items-center justify-center space-x-2 shadow-lg"
+                >
+                  <Save className="w-5 h-5" />
+                  <span className="font-semibold">Save as Medicine Reminders</span>
+                </button>
+                <p className="text-xs text-gray-500 text-center mt-2">
+                  Medicines will be added to your reminder schedule below
+                </p>
+              </div>
+            ) : (
+              <div className="mt-6 pt-6 border-t border-gray-200">
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <h4 className="font-semibold text-blue-900 mb-2 flex items-center">
+                    <AlertCircle className="w-5 h-5 mr-2" />
+                    Tips for Better Results
+                  </h4>
+                  <ul className="text-sm text-blue-800 space-y-2">
+                    <li>✓ Upload an actual prescription (not brochures or ads)</li>
+                    <li>✓ Ensure medicine names are clearly visible</li>
+                    <li>✓ Use good lighting (avoid shadows and glare)</li>
+                    <li>✓ Keep text in focus (not blurry)</li>
+                    <li>✓ We detect: Panadol, Brufen, Augmentin, Flagyl, Azomax, and 43 more Pakistani medicines</li>
+                  </ul>
+                  <div className="mt-3 p-3 bg-white rounded border border-blue-300">
+                    <p className="text-xs font-mono text-gray-700">
+                      <strong>Example prescription text:</strong><br/>
+                      Dr. Ahmad Khan<br/>
+                      Panadol 500mg - Twice daily<br/>
+                      Brufen 400mg - Three times daily
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Show extracted text (collapsible) */}
+            {extractedText && (
+              <details className="mt-6 pt-6 border-t border-gray-200">
+                <summary className="cursor-pointer text-sm font-medium text-gray-700 hover:text-primary-600">
+                  View Raw OCR Text
+                </summary>
+                <div className="mt-3 p-4 bg-gray-50 rounded-lg text-xs font-mono text-gray-700 max-h-40 overflow-y-auto whitespace-pre-wrap">
+                  {extractedText}
+                </div>
+              </details>
+            )}
           </div>
         )}
 
@@ -404,8 +631,63 @@ function PatientDashboard({ patientName, patientId }) {
           </div>
         )}
 
+        {/* Saved Medicine Reminders */}
+        {savedReminders.length > 0 && (
+          <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+            <h2 className="text-xl font-semibold text-gray-900 mb-4 flex items-center">
+              <Bell className="w-6 h-6 mr-2 text-green-600" />
+              My Saved Medicine Reminders
+            </h2>
+            <p className="text-sm text-gray-600 mb-4">
+              Medicines extracted from your prescription and saved as reminders
+            </p>
+            
+            <div className="space-y-4">
+              {savedReminders.map((reminder, idx) => (
+                <div key={idx} className="border border-green-200 bg-green-50 rounded-lg p-4 hover:shadow-md transition-shadow">
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex items-start space-x-3">
+                      <div className="bg-green-600 p-2 rounded-lg">
+                        <Pill className="w-5 h-5 text-white" />
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-gray-900">{reminder.drug}</h4>
+                        <p className="text-sm text-gray-600">{reminder.dosage}</p>
+                        {reminder.genericName && reminder.genericName !== 'Unknown' && (
+                          <p className="text-xs text-gray-500">Generic: {reminder.genericName}</p>
+                        )}
+                      </div>
+                    </div>
+                    <span className="px-2 py-1 bg-green-600 text-white rounded-full text-xs font-medium">
+                      Active
+                    </span>
+                  </div>
+
+                  <div className="flex items-center space-x-2 mb-2">
+                    <Clock className="w-4 h-4 text-gray-500" />
+                    <span className="text-sm text-gray-600">{reminder.frequency}</span>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    {reminder.times.map((time, timeIdx) => (
+                      <div key={timeIdx} className="flex items-center space-x-2 px-3 py-2 bg-white border border-green-300 rounded-lg">
+                        <Bell className="w-4 h-4 text-green-600" />
+                        <span className="text-sm font-medium text-green-700">{time}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-3 text-xs text-gray-500">
+                    Added: {reminder.addedAt}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Empty State */}
-        {!currentPatient && !extractedData && (
+        {!currentPatient && !extractedData && savedReminders.length === 0 && (
           <div className="bg-white rounded-lg shadow-md p-12 text-center">
             <Heart className="w-16 h-16 text-gray-300 mx-auto mb-4" />
             <h3 className="text-xl font-semibold text-gray-900 mb-2">Welcome to Your Health Dashboard</h3>
@@ -415,6 +697,26 @@ function PatientDashboard({ patientName, patientId }) {
           </div>
         )}
       </div>
+
+      {/* Floating Chatbot Button */}
+      <button
+        onClick={() => setIsChatbotOpen(true)}
+        className="fixed bottom-6 right-6 bg-gradient-to-r from-primary-600 to-blue-600 text-white p-4 rounded-full shadow-2xl hover:shadow-3xl hover:scale-110 transition-all duration-300 z-40 flex items-center space-x-2 group"
+        aria-label="Open MedSafe Assistant"
+      >
+        <MessageCircle className="w-6 h-6" />
+        <span className="hidden group-hover:inline-block text-sm font-medium pr-2 animate-fade-in">
+          Ask MedSafe Assistant
+        </span>
+      </button>
+
+      {/* MedSafe Assistant Chatbot */}
+      <MedSafeAssistant
+        isOpen={isChatbotOpen}
+        onClose={() => setIsChatbotOpen(false)}
+        patientName={patientName}
+        patientData={currentPatient}
+      />
     </div>
   );
 }
